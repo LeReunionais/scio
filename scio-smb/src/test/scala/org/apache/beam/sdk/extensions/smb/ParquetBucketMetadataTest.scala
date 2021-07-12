@@ -16,11 +16,14 @@
  */
 package org.apache.beam.sdk.extensions.smb
 
+import com.spotify.scio.avro.Account
 import org.apache.avro.generic.{GenericRecord, GenericRecordBuilder}
-import org.apache.beam.sdk.coders.StringUtf8Coder
+import org.apache.avro.util.Utf8
+import org.apache.beam.sdk.coders.{AvroCoder, StringUtf8Coder}
 import org.apache.beam.sdk.extensions.smb.BucketMetadata.HashType
 import org.apache.beam.sdk.io.AvroGeneratedUser
 import org.apache.beam.sdk.transforms.display.DisplayData
+import org.apache.beam.sdk.util.CoderUtils
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -283,5 +286,34 @@ class ParquetBucketMetadataTest extends AnyFlatSpec with Matchers {
         classOf[User]
       )
     }
+  }
+
+  it should "convert Utf8-typed Avro records to Strings" in {
+    val metadata =
+      new ParquetBucketMetadata[String, Account](
+        1,
+        1,
+        classOf[String],
+        HashType.MURMUR3_32,
+        "name",
+        SortedBucketIO.DEFAULT_FILENAME_PREFIX,
+        Account.getClassSchema
+      )
+
+    val testRecord = Account
+      .newBuilder()
+      .setName("foo")
+      .setAmount(1.0)
+      .setId(1)
+      .setType("type")
+      .build()
+
+    val roundTripped = {
+      val serialized = CoderUtils.encodeToByteArray(AvroCoder.of(classOf[Account]), testRecord)
+      CoderUtils.decodeFromByteArray(AvroCoder.of(classOf[Account]), serialized)
+    }
+
+    roundTripped.getName.getClass shouldEqual classOf[Utf8]
+    metadata.extractKey(roundTripped) shouldEqual "foo"
   }
 }

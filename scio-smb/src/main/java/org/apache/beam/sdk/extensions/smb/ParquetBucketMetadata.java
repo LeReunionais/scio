@@ -19,24 +19,29 @@ package org.apache.beam.sdk.extensions.smb;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import org.apache.avro.Schema;
-import org.apache.avro.generic.GenericRecord;
-import org.apache.avro.reflect.ReflectData;
-import org.apache.beam.sdk.coders.CannotProvideCoderException;
-import org.apache.beam.sdk.coders.Coder;
-import org.apache.beam.sdk.transforms.display.DisplayData;
-import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions;
-
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Map;
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericData.StringType;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.reflect.ReflectData;
+import org.apache.beam.sdk.coders.CannotProvideCoderException;
+import org.apache.beam.sdk.coders.Coder;
+import org.apache.beam.sdk.transforms.SerializableFunction;
+import org.apache.beam.sdk.transforms.display.DisplayData;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Preconditions;
 
 public class ParquetBucketMetadata<K, V> extends BucketMetadata<K, V> {
 
   @JsonProperty private final String keyField;
 
   @JsonIgnore private final String[] keyPath;
+
+  @JsonProperty private final StringType stringProp;
+
+  @JsonIgnore private final SerializableFunction<Object, K> keyCastFn;
 
   // Parquet is a file format only. `V` can be Avro records, Scala case classes, etc.
   private enum RecordType {
@@ -65,7 +70,8 @@ public class ParquetBucketMetadata<K, V> extends BucketMetadata<K, V> {
         (Class<K>) toJavaType(keyClass),
         hashType,
         validateKeyField(keyField, toJavaType(keyClass), recordClass),
-        filenamePrefix);
+        filenamePrefix,
+        getStringTypeProp(keyField, recordClass));
   }
 
   @SuppressWarnings("unchecked")
@@ -85,7 +91,28 @@ public class ParquetBucketMetadata<K, V> extends BucketMetadata<K, V> {
         (Class<K>) toJavaType(keyClass),
         hashType,
         AvroUtils.validateKeyField(keyField, toJavaType(keyClass), schema),
-        filenamePrefix);
+        filenamePrefix,
+        AvroUtils.getStringTypeProp(keyField, schema));
+  }
+
+  ParquetBucketMetadata(
+      int version,
+      int numBuckets,
+      int numShards,
+      Class<K> keyClass,
+      BucketMetadata.HashType hashType,
+      String keyField,
+      String filenamePrefix)
+      throws CannotProvideCoderException, Coder.NonDeterministicException {
+    this(
+        version,
+        numBuckets,
+        numShards,
+        keyClass,
+        hashType,
+        keyField,
+        filenamePrefix,
+        StringType.Utf8);
   }
 
   @JsonCreator
@@ -96,11 +123,15 @@ public class ParquetBucketMetadata<K, V> extends BucketMetadata<K, V> {
       @JsonProperty("keyClass") Class<K> keyClass,
       @JsonProperty("hashType") BucketMetadata.HashType hashType,
       @JsonProperty("keyField") String keyField,
-      @JsonProperty(value = "filenamePrefix", required = false) String filenamePrefix)
+      @JsonProperty(value = "filenamePrefix", required = false) String filenamePrefix,
+      @JsonProperty(value = "stringProp") StringType stringProp)
       throws CannotProvideCoderException, Coder.NonDeterministicException {
     super(version, numBuckets, numShards, keyClass, hashType, filenamePrefix);
     this.keyField = keyField;
     this.keyPath = toKeyPath(keyField);
+
+    this.stringProp = stringProp;
+    this.keyCastFn = AvroUtils.getKeyCastFn(stringProp, keyClass);
   }
 
   @Override
@@ -151,9 +182,8 @@ public class ParquetBucketMetadata<K, V> extends BucketMetadata<K, V> {
     if (getKeyClass() == CharSequence.class || getKeyClass() == String.class) {
       keyObj = keyObj.toString();
     }
-    @SuppressWarnings("unchecked")
-    K key = (K) keyObj;
-    return key;
+
+    return keyCastFn.apply(keyObj);
   }
 
   // FIXME: what about `Option[T]`
@@ -217,6 +247,18 @@ public class ParquetBucketMetadata<K, V> extends BucketMetadata<K, V> {
             new ReflectData(recordClass.getClassLoader()).getSchema(recordClass));
       case SCALA:
         return validateScalaKeyField(keyField, keyClass, recordClass);
+      default:
+        throw new IllegalStateException("Unexpected value: " + getRecordType(recordClass));
+    }
+  }
+
+  private static StringType getStringTypeProp(String keyField, Class<?> recordClass) {
+    switch (getRecordType(recordClass)) {
+      case AVRO:
+        return AvroUtils.getStringTypeProp(
+            keyField, new ReflectData(recordClass.getClassLoader()).getSchema(recordClass));
+      case SCALA:
+        return null;
       default:
         throw new IllegalStateException("Unexpected value: " + getRecordType(recordClass));
     }

@@ -25,10 +25,12 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Arrays;
 import java.util.Map;
 import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericData.StringType;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.reflect.ReflectData;
 import org.apache.beam.sdk.coders.CannotProvideCoderException;
 import org.apache.beam.sdk.coders.Coder;
+import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.display.DisplayData.Builder;
 
@@ -41,6 +43,10 @@ public class AvroBucketMetadata<K, V extends GenericRecord> extends BucketMetada
 
   @JsonIgnore private final String[] keyPath;
 
+  @JsonProperty private final StringType stringProp;
+
+  @JsonIgnore private final SerializableFunction<Object, K> keyCastFn;
+
   public AvroBucketMetadata(
       int numBuckets,
       int numShards,
@@ -51,16 +57,13 @@ public class AvroBucketMetadata<K, V extends GenericRecord> extends BucketMetada
       Class<V> recordClass)
       throws CannotProvideCoderException, NonDeterministicException {
     this(
-        BucketMetadata.CURRENT_VERSION,
         numBuckets,
         numShards,
         keyClass,
         hashType,
-        AvroUtils.validateKeyField(
-            keyField,
-            keyClass,
-            new ReflectData(recordClass.getClassLoader()).getSchema(recordClass)),
-        filenamePrefix);
+        keyField,
+        filenamePrefix,
+        new ReflectData(recordClass.getClassLoader()).getSchema(recordClass));
   }
 
   public AvroBucketMetadata(
@@ -79,7 +82,28 @@ public class AvroBucketMetadata<K, V extends GenericRecord> extends BucketMetada
         keyClass,
         hashType,
         AvroUtils.validateKeyField(keyField, keyClass, schema),
-        filenamePrefix);
+        filenamePrefix,
+        AvroUtils.getStringTypeProp(keyField, schema));
+  }
+
+  AvroBucketMetadata(
+      int version,
+      int numBuckets,
+      int numShards,
+      Class<K> keyClass,
+      BucketMetadata.HashType hashType,
+      String keyField,
+      String filenamePrefix)
+      throws CannotProvideCoderException, NonDeterministicException {
+    this(
+        version,
+        numBuckets,
+        numShards,
+        keyClass,
+        hashType,
+        keyField,
+        filenamePrefix,
+        StringType.Utf8);
   }
 
   @JsonCreator
@@ -90,11 +114,14 @@ public class AvroBucketMetadata<K, V extends GenericRecord> extends BucketMetada
       @JsonProperty("keyClass") Class<K> keyClass,
       @JsonProperty("hashType") BucketMetadata.HashType hashType,
       @JsonProperty("keyField") String keyField,
-      @JsonProperty(value = "filenamePrefix", required = false) String filenamePrefix)
+      @JsonProperty(value = "filenamePrefix", required = false) String filenamePrefix,
+      @JsonProperty(value = "stringProp", required = false) StringType stringProp)
       throws CannotProvideCoderException, NonDeterministicException {
     super(version, numBuckets, numShards, keyClass, hashType, filenamePrefix);
     this.keyField = keyField;
     this.keyPath = AvroUtils.toKeyPath(keyField);
+    this.stringProp = stringProp;
+    this.keyCastFn = AvroUtils.getKeyCastFn(stringProp, keyClass);
   }
 
   @Override
@@ -108,9 +135,8 @@ public class AvroBucketMetadata<K, V extends GenericRecord> extends BucketMetada
     for (int i = 0; i < keyPath.length - 1; i++) {
       node = (GenericRecord) node.get(keyPath[i]);
     }
-    @SuppressWarnings("unchecked")
-    K key = (K) node.get(keyPath[keyPath.length - 1]);
-    return key;
+
+    return keyCastFn.apply(node.get(keyPath[keyPath.length - 1]));
   }
 
   @Override

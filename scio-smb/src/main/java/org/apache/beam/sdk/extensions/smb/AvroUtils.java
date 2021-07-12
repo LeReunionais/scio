@@ -18,13 +18,17 @@ package org.apache.beam.sdk.extensions.smb;
 
 import com.google.common.base.Preconditions;
 import org.apache.avro.Schema;
+import org.apache.avro.Schema.Type;
 import org.apache.avro.generic.GenericData;
+import org.apache.avro.generic.GenericData.StringType;
 import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.util.Utf8;
 import org.apache.beam.sdk.coders.AtomicCoder;
 import org.apache.beam.sdk.coders.ByteArrayCoder;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
+import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
 
 import java.io.IOException;
@@ -72,6 +76,44 @@ class AvroUtils {
             keyClass, finalKeyFieldClass));
 
     return keyField;
+  }
+
+  public static StringType getStringTypeProp(String keyField, Schema schema) {
+    final Schema keyFieldSchema = getKeyField(keyField, schema).schema();
+    final String stringProp = keyFieldSchema.getProp(GenericData.STRING_PROP);
+
+    if (stringProp == null) {
+      return StringType.Utf8;
+    }
+    return StringType.valueOf(stringProp);
+  }
+
+  @SuppressWarnings("unchecked")
+  public static <K> SerializableFunction<Object, K> getKeyCastFn(
+      StringType stringProp, Class<K> keyClass) {
+    if (keyClass.equals(String.class) && stringProp != StringType.String) {
+      return field -> (K) field.toString();
+    } else {
+      return field -> (K) field;
+    }
+  }
+
+  private static Schema.Field getKeyField(String keyField, Schema schema) {
+    final String[] keyPath = toKeyPath(keyField);
+
+    Schema currSchema = schema;
+    for (int i = 0; i < keyPath.length - 1; i++) {
+      final Schema.Field field = currSchema.getField(keyPath[i]);
+      Preconditions.checkNotNull(
+          field, String.format("Key path %s does not exist in schema %s", keyPath[i], currSchema));
+
+      currSchema = getSchemaOrInnerUnionSchema(field.schema());
+      Preconditions.checkArgument(
+          currSchema.getType() == Schema.Type.RECORD,
+          "Non-leaf key field " + keyPath[i] + " is not a Record type");
+    }
+
+    return currSchema.getField(keyPath[keyPath.length - 1]);
   }
 
   private static Class<?> getKeyClassFromSchema(Schema schema) {
@@ -169,6 +211,26 @@ class AvroUtils {
     @Override
     public ByteBuffer decode(InputStream inStream) throws CoderException, IOException {
       return ByteBuffer.wrap(ByteArrayCoder.of().decode(inStream));
+    }
+  }
+
+  private static class AvroUtf8Coder extends AtomicCoder<Utf8> {
+    private static final AvroUtf8Coder INSTANCE = new AvroUtf8Coder();
+
+    private AvroUtf8Coder() {}
+
+    public static AvroUtf8Coder of() {
+      return INSTANCE;
+    }
+
+    @Override
+    public void encode(Utf8 value, OutputStream outStream) throws IOException {
+      ByteArrayCoder.of().encode(value.getBytes(), outStream);
+    }
+
+    @Override
+    public Utf8 decode(InputStream inStream) throws CoderException, IOException {
+      return new Utf8(ByteArrayCoder.of().decode(inStream));
     }
   }
 

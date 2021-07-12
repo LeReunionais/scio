@@ -19,6 +19,7 @@ package org.apache.beam.sdk.extensions.smb;
 
 import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.hasDisplayItem;
 
+import com.spotify.scio.avro.Account;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
@@ -27,14 +28,19 @@ import java.util.Collections;
 import java.util.List;
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Type;
+import org.apache.avro.generic.GenericData;
+import org.apache.avro.generic.GenericData.StringType;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.GenericRecordBuilder;
+import org.apache.avro.util.Utf8;
+import org.apache.beam.sdk.coders.AvroCoder;
 import org.apache.beam.sdk.coders.CannotProvideCoderException;
 import org.apache.beam.sdk.coders.Coder.NonDeterministicException;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.extensions.smb.BucketMetadata.HashType;
 import org.apache.beam.sdk.io.AvroGeneratedUser;
 import org.apache.beam.sdk.transforms.display.DisplayData;
+import org.apache.beam.sdk.util.CoderUtils;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Lists;
 import org.hamcrest.MatcherAssert;
 import org.junit.Assert;
@@ -371,6 +377,52 @@ public class AvroBucketMetadataTest {
                 "unionField",
                 SortedBucketIO.DEFAULT_FILENAME_PREFIX,
                 illegalUnionSchema2));
+  }
+
+  @Test
+  public void testUtf8ToStringConversion() throws Exception {
+    // Test that default value is still Utf 8
+    Assert.assertEquals(
+        StringType.Utf8, AvroUtils.getStringTypeProp("name", Account.getClassSchema()));
+
+    final Account testRecord =
+        Account.newBuilder().setName("foo").setAmount(1.0).setId(1).setType("type").build();
+
+    // undergo round-trip serialization to decode String data as default string prop type, Utf8
+    final byte[] serialized = CoderUtils.encodeToByteArray(AvroCoder.of(Account.class), testRecord);
+    final Account deserialized =
+        CoderUtils.decodeFromByteArray(AvroCoder.of(Account.class), serialized);
+
+    Assert.assertEquals(Utf8.class, deserialized.getName().getClass());
+
+    final AvroBucketMetadata<String, Account> metadata =
+        new AvroBucketMetadata<>(
+            1,
+            1,
+            String.class,
+            HashType.MURMUR3_32,
+            "name",
+            SortedBucketIO.DEFAULT_FILENAME_PREFIX,
+            Account.getClassSchema());
+    Assert.assertEquals("foo", metadata.extractKey(deserialized));
+  }
+
+  @Test
+  public void testStringJavaProp() throws Exception {
+    final Schema schemaCopy = new Schema.Parser().parse(Account.getClassSchema().toString());
+    schemaCopy.getField("name").schema().addProp(GenericData.STRING_PROP, StringType.String.name());
+
+    Assert.assertEquals(StringType.String, AvroUtils.getStringTypeProp("name", schemaCopy));
+
+    final Account testRecord =
+        Account.newBuilder().setName("foo").setAmount(1.0).setId(1).setType("type").build();
+
+    // undergo round-trip serialization to decode String data using defined property
+    final byte[] serialized = CoderUtils.encodeToByteArray(AvroCoder.of(schemaCopy), testRecord);
+    final GenericRecord deserialized =
+        CoderUtils.decodeFromByteArray(AvroCoder.of(schemaCopy), serialized);
+
+    Assert.assertEquals(String.class, deserialized.get("name").getClass());
   }
 
   private static Schema createUnionRecordOfTypes(Schema.Type... types) {
