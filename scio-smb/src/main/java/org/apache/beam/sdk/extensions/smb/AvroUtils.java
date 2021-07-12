@@ -18,11 +18,9 @@ package org.apache.beam.sdk.extensions.smb;
 
 import com.google.common.base.Preconditions;
 import org.apache.avro.Schema;
-import org.apache.avro.Schema.Type;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericData.StringType;
 import org.apache.avro.generic.GenericRecord;
-import org.apache.avro.util.Utf8;
 import org.apache.beam.sdk.coders.AtomicCoder;
 import org.apache.beam.sdk.coders.ByteArrayCoder;
 import org.apache.beam.sdk.coders.Coder;
@@ -46,27 +44,7 @@ class AvroUtils {
   }
 
   public static String validateKeyField(String keyField, Class<?> keyClass, Schema schema) {
-    final String[] keyPath = toKeyPath(keyField);
-
-    Schema currSchema = schema;
-    for (int i = 0; i < keyPath.length - 1; i++) {
-      final Schema.Field field = currSchema.getField(keyPath[i]);
-      Preconditions.checkNotNull(
-          field, String.format("Key path %s does not exist in schema %s", keyPath[i], currSchema));
-
-      currSchema = getSchemaOrInnerUnionSchema(field.schema());
-      Preconditions.checkArgument(
-          currSchema.getType() == Schema.Type.RECORD,
-          "Non-leaf key field " + keyPath[i] + " is not a Record type");
-    }
-
-    final Schema.Field finalKeyField = currSchema.getField(keyPath[keyPath.length - 1]);
-    Preconditions.checkNotNull(
-        finalKeyField,
-        String.format(
-            "Leaf key field %s does not exist in schema %s",
-            keyPath[keyPath.length - 1], currSchema));
-
+    final Schema.Field finalKeyField = getKeyField(keyField, schema);
     final Class<?> finalKeyFieldClass = getKeyClassFromSchema(finalKeyField.schema());
 
     Preconditions.checkArgument(
@@ -113,7 +91,13 @@ class AvroUtils {
           "Non-leaf key field " + keyPath[i] + " is not a Record type");
     }
 
-    return currSchema.getField(keyPath[keyPath.length - 1]);
+    Schema.Field field = currSchema.getField(keyPath[keyPath.length - 1]);
+    Preconditions.checkNotNull(
+        field,
+        String.format(
+            "Leaf key field %s does not exist in schema %s",
+            keyPath[keyPath.length - 1], currSchema));
+    return field;
   }
 
   private static Class<?> getKeyClassFromSchema(Schema schema) {
@@ -211,26 +195,6 @@ class AvroUtils {
     @Override
     public ByteBuffer decode(InputStream inStream) throws CoderException, IOException {
       return ByteBuffer.wrap(ByteArrayCoder.of().decode(inStream));
-    }
-  }
-
-  private static class AvroUtf8Coder extends AtomicCoder<Utf8> {
-    private static final AvroUtf8Coder INSTANCE = new AvroUtf8Coder();
-
-    private AvroUtf8Coder() {}
-
-    public static AvroUtf8Coder of() {
-      return INSTANCE;
-    }
-
-    @Override
-    public void encode(Utf8 value, OutputStream outStream) throws IOException {
-      ByteArrayCoder.of().encode(value.getBytes(), outStream);
-    }
-
-    @Override
-    public Utf8 decode(InputStream inStream) throws CoderException, IOException {
-      return new Utf8(ByteArrayCoder.of().decode(inStream));
     }
   }
 
